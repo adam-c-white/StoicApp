@@ -1,0 +1,252 @@
+// =============================================================================
+// StoicApp – Prisma Schema
+// =============================================================================
+// This schema is the authoritative Entity-Relationship definition for the
+// StoicApp backend.  It maps directly to the TypeScript interfaces in
+// types/models.ts.
+//
+// Conventions
+//   • Primary keys are CUIDs (cuid()) – URL-safe, globally unique, ordered.
+//   • All timestamps are stored in UTC (DateTime @db.Timestamptz in Postgres).
+//   • Soft-delete is NOT used – entries are hard-deleted to honour right-to-
+//     erasure (GDPR) requirements.
+//   • The `@@index` directives below reflect the most common read patterns.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enumerations
+// ---------------------------------------------------------------------------
+
+/// Roles that control access to admin features.
+enum UserRole {
+  USER
+  ADMIN
+}
+
+/// High-level Stoic themes used to categorise prompts.
+enum PromptCategory {
+  VIRTUE
+  RESILIENCE
+  WISDOM
+  MINDFULNESS
+  DISCIPLINE
+  ACCEPTANCE
+  OTHER
+}
+
+/// 1–5 mood scale captured alongside each journal entry.
+enum MoodRating {
+  VERY_BAD  // 1
+  BAD       // 2
+  NEUTRAL   // 3
+  GOOD      // 4
+  VERY_GOOD // 5
+}
+
+/// How a journal entry may be shared with others.
+enum ShareType {
+  /// Visible on a public profile page.
+  PUBLIC
+  /// Accessible via a time-limited, unguessable URL token.
+  LINK
+  /// Sent directly to a specific recipient by e-mail.
+  PRIVATE_MESSAGE
+}
+
+// ---------------------------------------------------------------------------
+// User account & authentication
+// ---------------------------------------------------------------------------
+
+/// A registered user account.
+///
+/// Passwords are never stored in plain text; only a bcrypt hash is persisted.
+/// OAuth / social sign-in flows may leave passwordHash null.
+model User {
+  id              String    @id @default(cuid())
+  /// Unique, lower-cased e-mail address used for authentication.
+  email           String    @unique
+  /// bcrypt hash of the user's password (null for OAuth-only accounts).
+  passwordHash    String?
+  /// Optional public display name.
+  displayName     String?
+  /// URL to a profile avatar image.
+  avatarUrl       String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  /// Timestamp of the most recent successful sign-in (UTC).
+  lastActiveAt    DateTime?
+  /// Whether the user has confirmed their e-mail address.
+  isEmailVerified Boolean   @default(false)
+  role            UserRole  @default(USER)
+
+  // Relations
+  journalEntries  JournalEntry[]
+  streak          Streak?
+  dailyActivities DailyActivity[]
+  sharedEntries   SharedEntry[]   @relation("SharedByUser")
+
+  @@index([email])
+  @@index([role])
+}
+
+// ---------------------------------------------------------------------------
+// Stoic prompts / quotes
+// ---------------------------------------------------------------------------
+
+/// A Stoic quote or reflection prompt surfaced to users.
+///
+/// Prompts are curated by admins and can be assigned to specific calendar
+/// dates (scheduledDate) or drawn randomly from the active pool.
+model StoicPrompt {
+  id            String         @id @default(cuid())
+  /// The full text of the quote or reflection prompt.
+  text          String
+  /// Name of the Stoic philosopher or source (e.g. "Marcus Aurelius").
+  author        String
+  /// Optional citation within the author's work (e.g. "Meditations, Book 5.8").
+  source        String?
+  category      PromptCategory @default(OTHER)
+  /// Freeform tags for fine-grained search (e.g. ["death", "equanimity"]).
+  tags          String[]
+  /// Whether this prompt is eligible for the daily rotation.
+  isActive      Boolean        @default(true)
+  /// Optional calendar date on which this prompt is scheduled to appear.
+  scheduledDate DateTime?
+  createdAt     DateTime       @default(now())
+
+  // Relations
+  journalEntries  JournalEntry[]
+  dailyActivities DailyActivity[]
+
+  @@index([isActive])
+  @@index([category])
+  @@index([scheduledDate])
+}
+
+// ---------------------------------------------------------------------------
+// Journal entries
+// ---------------------------------------------------------------------------
+
+/// A single journal entry written by a user, optionally tied to a prompt.
+///
+/// Privacy default: isPrivate = true.  Users must explicitly opt in to any
+/// form of sharing via the SharedEntry model.
+model JournalEntry {
+  id       String      @id @default(cuid())
+  userId   String
+  promptId String?
+  /// The journal text authored by the user.
+  content  String
+  /// Optional mood rating captured at the time of writing.
+  mood     MoodRating?
+  /// When true (the default) this entry is visible only to its author.
+  isPrivate Boolean    @default(true)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  // Relations
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  prompt        StoicPrompt? @relation(fields: [promptId], references: [id], onDelete: SetNull)
+  sharedEntries SharedEntry[]
+
+  @@index([userId])
+  @@index([userId, createdAt])
+  @@index([promptId])
+}
+
+// ---------------------------------------------------------------------------
+// Streak & history tracking
+// ---------------------------------------------------------------------------
+
+/// Aggregated streak statistics for a single user.
+///
+/// A "day" counts toward the streak only when the user creates at least one
+/// journal entry before midnight in their local time zone.
+model Streak {
+  id                 String   @id @default(cuid())
+  userId             String   @unique
+  /// Consecutive days journaled up to today.
+  currentStreak      Int      @default(0)
+  /// All-time longest consecutive streak (never decremented).
+  longestStreak      Int      @default(0)
+  /// The most recent calendar date on which the user journaled.
+  /// Null for users who have not yet created any journal entries.
+  lastActiveDate     DateTime?
+  /// Calendar date on which the current streak started.
+  /// Null for users who have not yet created any journal entries.
+  streakStartDate    DateTime?
+  /// Cumulative total of distinct days the user has journaled.
+  totalDaysJournaled Int      @default(0)
+  updatedAt          DateTime @updatedAt
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([currentStreak])
+}
+
+/// A granular per-day activity record used to build streak history charts
+/// and audit streak calculations without scanning all journal entries.
+///
+/// One record is upserted per user per calendar day.  It intentionally holds
+/// no FK to a specific journal entry: users may write multiple entries per
+/// day, and streak logic only needs to know whether at least one existed.
+model DailyActivity {
+  id           String   @id @default(cuid())
+  userId       String
+  /// Calendar date (time set to 00:00:00 UTC for unambiguous comparisons).
+  date         DateTime
+  /// Whether the user journaled on this day.
+  hasJournaled Boolean  @default(false)
+  promptId     String?
+
+  // Relations
+  user   User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  prompt StoicPrompt? @relation(fields: [promptId], references: [id], onDelete: SetNull)
+
+  /// One record per (user, day) pair.
+  @@unique([userId, date])
+  @@index([userId, date])
+  @@index([date])
+}
+
+// ---------------------------------------------------------------------------
+// Sharing
+// ---------------------------------------------------------------------------
+
+/// Represents an explicit sharing action taken by a user on one of their
+/// journal entries.
+///
+/// Keeping share metadata separate from the entry ensures access-control
+/// checks are centralised and auditable.
+model SharedEntry {
+  id             String    @id @default(cuid())
+  journalEntryId String
+  sharedByUserId String
+  shareType      ShareType
+  /// Random token for LINK-type shares.  Must be treated as a secret.
+  shareToken     String?   @unique
+  /// Recipient e-mail for PRIVATE_MESSAGE shares (store encrypted at rest).
+  recipientEmail String?
+  createdAt      DateTime  @default(now())
+  /// After this timestamp a LINK share token must be treated as invalid.
+  expiresAt      DateTime?
+
+  // Relations
+  journalEntry JournalEntry @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
+  sharedByUser User         @relation("SharedByUser", fields: [sharedByUserId], references: [id], onDelete: Cascade)
+
+  @@index([journalEntryId])
+  @@index([sharedByUserId])
+  @@index([shareToken])
+  @@index([expiresAt])
+}
