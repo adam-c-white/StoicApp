@@ -7,10 +7,15 @@
 //
 // Conventions
 //   • Primary keys are CUIDs (cuid()) – URL-safe, globally unique, ordered.
-//   • All timestamps are stored in UTC (DateTime @db.Timestamptz in Postgres).
+//   • All timestamps are stored as DateTime (UTC).
 //   • Soft-delete is NOT used – entries are hard-deleted to honour right-to-
 //     erasure (GDPR) requirements.
 //   • The `@@index` directives below reflect the most common read patterns.
+//
+// Database
+//   SQLite is used as a lightweight, file-based, installation-free database
+//   that works cross-platform (Linux, macOS, Windows) with no external service.
+//   Set DATABASE_URL in your .env file, e.g. DATABASE_URL="file:./dev.db"
 // =============================================================================
 
 generator client {
@@ -18,7 +23,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
@@ -115,8 +120,12 @@ model StoicPrompt {
   /// Optional citation within the author's work (e.g. "Meditations, Book 5.8").
   source        String?
   category      PromptCategory @default(OTHER)
-  /// Freeform tags for fine-grained search (e.g. ["death", "equanimity"]).
-  tags          String[]
+  /// Freeform tags for fine-grained search stored as a JSON array string.
+  /// SQLite does not support native arrays, so this field holds a JSON-encoded
+  /// string array (e.g. '["death","equanimity"]').
+  /// • Read:  JSON.parse(tags) as string[]
+  /// • Write: JSON.stringify(tagsArray)
+  tags          String         @default("[]")
   /// Whether this prompt is eligible for the daily rotation.
   isActive      Boolean        @default(true)
   /// Optional calendar date on which this prompt is scheduled to appear.
