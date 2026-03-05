@@ -8,6 +8,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { POST } from "@/app/api/auth/register/route";
 import { NextRequest } from "next/server";
+import { Prisma } from "@prisma/client";
 
 // Mock Prisma
 vi.mock("@/lib/prisma", () => ({
@@ -174,5 +175,28 @@ describe("POST /api/auth/register", () => {
 
     expect(data.user.passwordHash).toBeUndefined();
     expect(data.user.password).toBeUndefined();
+  });
+
+  it("returns 409 when a P2002 unique-constraint error is thrown (race condition)", async () => {
+    mockedPrisma.user.findUnique.mockResolvedValueOnce(null);
+
+    // Simulate two concurrent registrations: the second create hits the
+    // unique constraint before the first request's findUnique check could
+    // see the row.
+    const p2002Error = new Prisma.PrismaClientKnownRequestError(
+      "Unique constraint failed on the fields: (`email`)",
+      { code: "P2002", clientVersion: "6.0.0", meta: { target: ["email"] } }
+    );
+    mockedPrisma.user.create.mockRejectedValueOnce(p2002Error);
+
+    const req = createRequest({
+      email: "duplicate@example.com",
+      password: "validpassword123",
+    });
+    const res = await POST(req);
+    const data = await res.json();
+
+    expect(res.status).toBe(409);
+    expect(data.error).toContain("already exists");
   });
 });

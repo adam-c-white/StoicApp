@@ -8,6 +8,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
   hashPassword,
@@ -91,7 +92,21 @@ export async function POST(request: NextRequest) {
       { message: "Account created successfully.", user },
       { status: 201 }
     );
-  } catch {
+  } catch (error) {
+    console.error("[POST /api/auth/register]", error);
+
+    // Guard against a race condition where two concurrent registrations use the
+    // same email address and both pass the findUnique check above.
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    ) {
+      return NextResponse.json(
+        { error: "An account with this email already exists." },
+        { status: 409 }
+      );
+    }
+
     return NextResponse.json(
       { error: "An unexpected error occurred. Please try again." },
       { status: 500 }

@@ -46,19 +46,32 @@ export default function RegisterPage() {
         return;
       }
 
-      // Auto sign-in after successful registration
-      const result = await signIn("credentials", {
-        email,
-        password,
-        redirect: false,
-      });
+      // Auto sign-in after successful registration.
+      // Wrap in its own try/catch: if the sign-in client throws (e.g. due to
+      // a misconfigured NextAuth response), the account was still created so
+      // we redirect to /login rather than surfacing a confusing error here.
+      try {
+        const result = await signIn("credentials", {
+          email,
+          password,
+          redirect: false,
+        });
 
-      if (result?.error) {
-        // Registration succeeded but auto-login failed — redirect to login
+        if (result?.error) {
+          // Registration succeeded but auto-login failed — redirect to login
+          router.push("/login");
+        } else {
+          router.push("/dashboard");
+          router.refresh();
+        }
+      } catch (signInError) {
+        // Registration succeeded but the sign-in attempt threw — redirect to
+        // login so the user can sign in manually.
+        console.error(
+          "[Register] Auto sign-in failed after registration:",
+          signInError
+        );
         router.push("/login");
-      } else {
-        router.push("/dashboard");
-        router.refresh();
       }
     } catch {
       setError("An unexpected error occurred. Please try again.");
