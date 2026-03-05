@@ -1,0 +1,7 @@
+# Prettier ignore file
+node_modules
+.next
+out
+build
+public
+package-lock.json
