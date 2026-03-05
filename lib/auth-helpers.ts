@@ -67,7 +67,7 @@ export function validatePassword(password: string): string | null {
 }
 
 /**
- * Normalise an email address for storage and comparison.
+ * Normalize an email address for storage and comparison.
  *
  * Trims whitespace and converts to lower case, matching the Prisma
  * schema convention for the User.email field.
